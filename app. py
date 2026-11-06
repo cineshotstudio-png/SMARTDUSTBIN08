@@ -1,0 +1,125 @@
+</div>
+""", unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown("## ⚙️ Dashboard settings")
+    st.markdown("### Your starting location")
+    origin_lat = st.number_input("Your latitude", value=22.12, format="%.6f", key="origin_lat")
+    origin_lon = st.number_input("Your longitude", value=84.03, format="%.6f", key="origin_lon")
+    st.caption("Enter the location from which the collector will travel.")
+    st.divider()
+    st.markdown("### Dustbin GPS location")
+    dust_lat = st.number_input("Dustbin latitude", value=float(st.session_state.dustbin_lat), format="%.6f", key="dust_lat")
+    dust_lon = st.number_input("Dustbin longitude", value=float(st.session_state.dustbin_lon), format="%.6f", key="dust_lon")
+    if st.button("Update dustbin location", use_container_width=True):
+        if valid_coords(dust_lat, dust_lon):
+            st.session_state.dustbin_lat = dust_lat
+            st.session_state.dustbin_lon = dust_lon
+            st.success("Dustbin location updated.")
+        else:
+            st.error("Please enter valid latitude and longitude.")
+
+    st.divider()
+    st.markdown("### SMS test")
+    st.caption("Paste the SMS received from your SIM900A here.")
+    sms_text = st.text_area(
+        "Incoming SMS",
+        value="EMERGENCY ALERT! DUSTBIN FULL. LAT: 22.120000, LON: 84.030000",
+        height=110,
+    )
+    if st.button("📩 Process SMS", use_container_width=True):
+        coords = parse_sms(sms_text)
+        if coords:
+            st.session_state.dustbin_lat, st.session_state.dustbin_lon = coords
+            st.session_state.last_sms = sms_text
+            st.session_state.alert_received = True
+            st.success("SMS processed. Dustbin GPS location updated.")
+        else:
+            st.error("Coordinates not found. SMS must contain LAT: value and LON: value.")
+
+# ---------- Main metrics ----------
+distance_straight = haversine_km(
+    float(origin_lat), float(origin_lon),
+    float(st.session_state.dustbin_lat), float(st.session_state.dustbin_lon)
+)
+c1, c2, c3, c4 = st.columns(4)
+metrics = [
+    (c1, "SYSTEM STATUS", "ONLINE", "🟢"),
+    (c2, "LATEST ALERT", "Dustbin nearly full", "📩"),
+    (c3, "GPS STATUS", "Location received", "📍"),
+    (c4, "STRAIGHT-LINE DISTANCE", f"{distance_straight:.2f} km", "📏"),
+]
+for col, label, value, emoji in metrics:
+    with col:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">{emoji} {label}</div>'
+            f'<div class="metric-value">{value}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+st.write("")
+left, right = st.columns([1.7, 1], gap="large")
+
+with left:
+    st.subheader("🗺️ Route to the dustbin")
+    origin = (float(origin_lat), float(origin_lon))
+    destination = (float(st.session_state.dustbin_lat), float(st.session_state.dustbin_lon))
+    route_points = None
+    road_km = None
+    duration_min = None
+    route_error = None
+    if origin == destination:
+        route_error = "Your starting point and dustbin location are the same. Enter two different locations."
+    else:
+        try:
+            route_points, road_km, duration_min = get_route(origin, destination)
+        except Exception as exc:
+            route_error = str(exc)
+
+    m = folium.Map(location=destination, zoom_start=13, tiles="OpenStreetMap")
+    folium.Marker(origin, tooltip="Collection team start", popup="Your starting location",
+                  icon=folium.Icon(color="blue", icon="truck", prefix="fa")).add_to(m)
+    folium.Marker(destination, tooltip="Dustbin location", popup="Dustbin GPS location",
+                  icon=folium.Icon(color="green", icon="trash", prefix="fa")).add_to(m)
+    if route_points:
+        folium.PolyLine(route_points, color="#168044", weight=6, opacity=.9, tooltip="Driving route").add_to(m)
+        m.fit_bounds([origin, destination])
+    else:
+        m.fit_bounds([origin, destination])
+    st_folium(m, use_container_width=True, height=470, returned_objects=[])
+
+    if route_points:
+        r1, r2 = st.columns(2)
+        with r1:
+            st.metric("🛣️ Road distance", f"{road_km:.2f} km")
+        with r2:
+            st.metric("⏱️ Estimated travel time", f"{round(duration_min)} min")
+    elif route_error:
+        st.warning(f"Road route unavailable: {route_error} The map still shows both locations. Check internet access and coordinates.")
+
+with right:
+    st.subheader("📬 Latest SMS alert")
+    st.markdown(
+        f'<div class="metric-card"><div class="metric-label">INCOMING MESSAGE</div>'
+        f'<div style="color:#183b2a;font-size:1rem;margin-top:10px;white-space:pre-wrap;">{st.session_state.last_sms}</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    st.subheader("📍 Dustbin details")
+    st.write(f"**Latitude:** `{st.session_state.dustbin_lat:.6f}`")
+    st.write(f"**Longitude:** `{st.session_state.dustbin_lon:.6f}`")
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={st.session_state.dustbin_lat},{st.session_state.dustbin_lon}"
+    st.link_button("Open dustbin in Google Maps ↗", maps_url, use_container_width=True)
+    st.info("The green route is a road route when the routing service is available. The straight-line distance is shown separately above.")
+
+st.divider()
+st.markdown("### 🔔 How this dashboard works")
+st.markdown("""
+1. The Arduino and SIM900A send an alert containing the dustbin's GPS coordinates.
+2. The SMS is forwarded into this dashboard through an SMS-to-web bridge, or pasted into **SMS test** for a demonstration.
+3. The dashboard updates the dustbin pin and calculates the driving route from the collection team's starting location.
+""")
+st.markdown(
+    '<p class="small-note">Demo note: the starting location and initial dustbin coordinates are sample values. Replace them with your real GPS coordinates before presenting. Road distance and travel time require an internet connection and use the public OSRM routing demo service.</p>',
+    unsafe_allow_html=True,
+)
